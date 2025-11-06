@@ -1,0 +1,5 @@
+site_name: Git Upload Anything Documentation
+theme:
+  name: material
+docs_dir: docs  # Directory delle documentazioni
+site_dir: site  # Directory di output per GitHub Pages
