@@ -34,6 +34,19 @@ jobs:
       with:
         python-version: '3.x'
 
+    - name: Write mkdocs.yml dynamically
+      run: |
+        REPO_NAME=${GITHUB_REPOSITORY#*/}
+        cat > mkdocs.yml <<EOL
+        site_name: Git Upload Anything Documentation
+        docs_dir: docs
+        site_dir: site
+        site_url: https://$GITHUB_ACTOR.github.io/$REPO_NAME/
+        use_directory_urls: false
+        theme:
+          name: mkdocs
+        EOL
+
     - name: Install MkDocs
       run: |
         python -m pip install --upgrade pip
@@ -47,4 +60,3 @@ jobs:
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./site
-
