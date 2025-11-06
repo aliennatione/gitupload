@@ -1,6 +1,19 @@
 name: Deploy to GitHub Pages
 
 on:
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: "Seleziona l'ambiente di deploy"
+        required: true
+        type: choice
+        options:
+          - test
+          - produzione
+      versione:
+        description: 'Numero di versione da taggare'
+        required: false
+        type: string
   push:
     branches:
       - main  # Esegui l'azione quando viene fatto push su main
