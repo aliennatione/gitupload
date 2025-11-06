@@ -1,5 +1,7 @@
-site_name: Git Upload Anything Documentation
+site_name: GitUpload Documentation
 theme:
   name: mkdocs
-docs_dir: docs  # Directory delle documentazioni
-site_dir: site  # Directory di output per GitHub Pages
+docs_dir: docs
+site_dir: site
+site_url: https://aliennatione.github.io/gitupload/
+use_directory_urls: false
