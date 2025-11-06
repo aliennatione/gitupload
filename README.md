@@ -1,4 +1,3 @@
-```markdown
 # git-upload-anything
 
 Uno strumento CLI robusto e versatile per caricare e gestire facilmente file e cartelle su diverse piattaforme Git.
@@ -123,4 +122,3 @@ Siamo entusiasti di accogliere contributi per migliorare `git-upload-anything`! 
 ## Licenza
 
 Questo progetto è distribuito sotto la licenza MIT. Per maggiori dettagli, consulta il file [LICENSE](LICENSE) nella root del repository.
-```
