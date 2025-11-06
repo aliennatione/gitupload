@@ -16,7 +16,10 @@ on:
         type: string
   push:
     branches:
-      - main  # Esegui l'azione quando viene fatto push su main
+      - main
+
+permissions:
+  contents: write  # Esegui l'azione quando viene fatto push su main
 
 jobs:
   build:
