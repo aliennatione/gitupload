@@ -3,5 +3,5 @@ theme:
   name: mkdocs
 docs_dir: docs
 site_dir: site
-site_url: https://aliennatione.github.io/gitupload/
+site_url: SETbyACTION
 use_directory_urls: false
