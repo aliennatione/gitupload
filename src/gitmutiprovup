@@ -1,86 +1,186 @@
-# ------------------------------------------------------------------
-# git-upload-anything: quick upload function for GitHub/GitLab/Forgejo
-# ------------------------------------------------------------------
-gupload() {
-  # Usage: gupload <source> <repo> [host] [private] [cleanup] [account]
-  # host: github (default), gitlab, forgejo
-  local SRC="$1"
-  local REPO="$2"
-  local HOST="${3:-github}"
-  local PRIVATE="${4:-false}"
-  local CLEANUP="${5:-false}"
-  local ACCOUNT="${6:-}"
-
-  if [[ -z "$SRC" || -z "$REPO" ]]; then
-    echo "[ERR] Usage: gupload <source> <repo> [host] [private] [cleanup] [account]"
-    return 1
-  fi
-
-  # Temporary script path
-  local TMP_SCRIPT="${HOME}/.gupload_temp.sh"
-
-  cat >"$TMP_SCRIPT" <<'EOF'
 #!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# gupload (v3.0 universal, source-friendly)
+# -----------------------------------------------------------------------------
+# Upload any folder or zip to GitHub, GitLab, Forgejo automatically.
+# Fully compatible with: bash, zsh, dash, Termux, Linux, macOS, WSL
+# -----------------------------------------------------------------------------
+# Requirements: bash, git, curl, unzip, gh, glab, sudo (auto-installs if missing)
+# -----------------------------------------------------------------------------
+
+
+# -----------------------------------------------------------------------------
+# Per usare questo script senza aprire un nuovo processo:
+# 1. Salva lo script in un file, ad es. ~/gupload.sh
+# 2. Rendi eseguibile (opzionale): chmod +x ~/gupload.sh
+# 3. Caricalo nel terminale corrente con:
+#      source ~/gupload.sh
+#    oppure abbreviazione:
+#      . ~/gupload.sh
+# 4. Ora puoi usare il comando `gupload` direttamente senza uscire dal terminale.
+# -----------------------------------------------------------------------------
+
 set -euo pipefail
-SOURCE="$1"
-REPO="$2"
-HOST="$3"
-PRIVATE="$4"
-CLEANUP="$5"
-ACCOUNT="$6"
+
+# --------------------- Logging ---------------------
 log() { printf "[INFO] %s\n" "$*"; }
-err() { printf "[ERR] %s\n" "$*" >&2; exit 1; }
+err() { printf "[ERR] %s\n" "$*" >&2; return 1; }
 
-# Dependency checks
-for dep in git curl unzip jq; do
-  command -v "$dep" >/dev/null 2>&1 || { echo "[ERR] Missing dependency: $dep"; exit 1; }
+# --------------------- Help ---------------------
+gupload_help() {
+cat <<'EOF'
+Usage: gupload [OPTIONS]
+
+Options:
+  --source <path>        Path to folder or zip file to upload
+  --repo <name>          Repository name to create
+  --host <github|gitlab|forgejo>  Git host (default: github)
+  --private              Make repository private
+  --cleanup              Remove temporary files after upload
+  --help                 Show this help
+
+Examples:
+  gupload --source ./myapp.zip --repo MyRepo --host github --private
+  gupload --source ./folder --repo Project --host gitlab --cleanup
+EOF
+}
+
+# --------------------- Parse CLI args ---------------------
+SOURCE=""
+REPO=""
+HOST="github"
+PRIVATE=false
+CLEANUP=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source) SOURCE="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --host) HOST="$2"; shift 2 ;;
+    --private) PRIVATE=true; shift ;;
+    --cleanup) CLEANUP=true; shift ;;
+    --help) gupload_help; return 0 ;;
+    *) err "Unknown argument: $1"; return 1 ;;
+  esac
 done
-[ "$HOST" = "github" ] && command -v gh >/dev/null 2>&1 || { echo "[ERR] gh CLI missing"; exit 1; }
-[ "$HOST" = "gitlab" ] && command -v glab >/dev/null 2>&1 || { echo "[ERR] glab CLI missing"; exit 1; }
 
-# Prepare workspace
-if [ -f "$SOURCE" ] && echo "$SOURCE" | grep -qi '\.zip$'; then
+[[ -z "$SOURCE" || -z "$REPO" ]] && { gupload_help; return 1; }
+
+# --------------------- Dependency check ---------------------
+check_dep() {
+  local dep=$1
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    log "Missing dependency: $dep"
+    install_dep "$dep"
+  fi
+}
+
+install_dep() {
+  local dep=$1
+  log "Installing $dep..."
+  if command -v pkg >/dev/null 2>&1; then pkg install -y "$dep"
+  elif command -v apt >/dev/null 2>&1; then sudo apt update && sudo apt install -y "$dep"
+  elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy "$dep" --noconfirm
+  elif command -v brew >/dev/null 2>&1; then brew install "$dep"
+  else err "Cannot install $dep: no supported package manager"; return 1
+  fi
+}
+
+# Host CLI dependencies
+case "$HOST" in
+  github) check_dep git && check_dep gh ;;
+  gitlab) check_dep git && check_dep glab ;;
+  forgejo) check_dep git && check_dep gh ;;
+  *) err "Unknown host: $HOST"; return 1 ;;
+esac
+
+# --------------------- Prepare workspace ---------------------
+TMP_DIR=""
+if [[ -f "$SOURCE" && "$SOURCE" == *.zip ]]; then
   TMP_DIR=$(mktemp -d)
   log "Extracting zip: $SOURCE -> $TMP_DIR"
   unzip -q "$SOURCE" -d "$TMP_DIR"
-  cd "$TMP_DIR"
-elif [ -d "$SOURCE" ]; then
-  cd "$SOURCE"
+  cd "$TMP_DIR" || return 1
+elif [[ -d "$SOURCE" ]]; then
+  cd "$SOURCE" || return 1
 else
-  err "Invalid source: $SOURCE"
+  err "Invalid source: $SOURCE"; return 1
 fi
 
-# Initialize git repo
-[ ! -d ".git" ] && git init >/dev/null
-git add . >/dev/null
-git commit -m "Initial commit" >/dev/null 2>&1 || true
+# --------------------- Git init ---------------------
+if [ ! -d ".git" ]; then
+  log "Initializing git repo..."
+  git init >/dev/null
+  git add . >/dev/null
+  git commit -m "Initial commit from gupload" >/dev/null
+else
+  if [ -z "$(git log --oneline 2>/dev/null)" ]; then
+    git add . >/dev/null
+    git commit -m "Initial commit from gupload" >/dev/null
+  fi
+fi
 
-# Create remote repo
+# --------------------- Remote repo creation ---------------------
 REPO_VISIBILITY="public"
-[ "$PRIVATE" = true ] && REPO_VISIBILITY="private"
+$PRIVATE && REPO_VISIBILITY="private"
+
+log "Creating repository '$REPO' on $HOST..."
 case "$HOST" in
   github)
-    gh repo create "$REPO" --"$REPO_VISIBILITY" --source=. --remote=origin --push ;;
+    gh auth status >/dev/null 2>&1 || gh auth login
+    gh repo create "$REPO" --"$REPO_VISIBILITY" --source=. --remote=origin --push || return 1
+    ;;
   gitlab)
-    glab repo create "$REPO" --"$REPO_VISIBILITY" --push ;;
-  forgejo|gitea)
-    : "${GITEA_HOST:?Need GITEA_HOST env}"
-    : "${GITEA_TOKEN:?Need GITEA_TOKEN env}"
-    PRIVATE_FLAG=0
-    [ "$PRIVATE" = true ] && PRIVATE_FLAG=1
-    curl -s -X POST -H "Content-Type: application/json" \
-      -H "Authorization: token $GITEA_TOKEN" \
-      -d "{\"name\":\"$REPO\",\"private\":$PRIVATE_FLAG}" \
-      "$GITEA_HOST/api/v1/user/repos" >/dev/null
-    git remote add origin "$GITEA_HOST/$REPO.git"
-    git push -u origin main ;;
-  *) err "Unsupported host: $HOST" ;;
+    glab auth status >/dev/null 2>&1 || glab auth login
+    glab repo create "$REPO" --private=$PRIVATE -y
+    git remote add origin "git@gitlab.com:$(glab api user | jq -r '.username')/$REPO.git"
+    git push -u origin master
+    ;;
+  forgejo)
+    # Forgejo compatible with gh CLI
+    gh auth status >/dev/null 2>&1 || gh auth login
+    gh repo create "$REPO" --"$REPO_VISIBILITY" --source=. --remote=origin --push
+    ;;
 esac
 
-[ "$CLEANUP" = true ] && [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR"
-log "✅ Repository '$REPO' uploaded to $HOST!"
-EOF
+# --------------------- Cleanup ---------------------
+if $CLEANUP && [[ -n "$TMP_DIR" ]]; then
+  log "Cleaning up temporary files..."
+  rm -rf "$TMP_DIR"
+fi
 
-  bash "$TMP_SCRIPT" "$SRC" "$REPO" "$HOST" "$PRIVATE" "$CLEANUP" "$ACCOUNT"
-  rm -f "$TMP_SCRIPT"
+log "✅ Repository '$REPO' successfully uploaded to $HOST!"
+return 0
+
+# ------------------- Autocomplete -------------------
+_gupload_complete() {
+  local cur prev hosts
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  hosts="github gitlab forgejo"
+
+  case "$prev" in
+    --source)
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      return 0
+      ;;
+    --repo)
+      COMPREPLY=( $(compgen -d -- "$cur") )
+      return 0
+      ;;
+    --host)
+      COMPREPLY=( $(compgen -W "$hosts" -- "$cur") )
+      return 0
+      ;;
+    --private|--cleanup)
+      COMPREPLY=( $(compgen -W "true false" -- "$cur") )
+      return 0
+      ;;
+  esac
+
+  # Suggest options
+  COMPREPLY=( $(compgen -W "--source --repo --host --private --cleanup --help" -- "$cur") )
 }
+
+complete -F _gupload_complete gupload
