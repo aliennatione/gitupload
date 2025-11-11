@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# git-upload-anything (v3 universal)
+# Uploads any folder or zip to GitHub, GitLab, or Forgejo/Gitea automatically.
+# Works in bash/zsh/Termux/macOS/Linux, supports multi-account, optional cleanup.
+#
+# Requirements: bash, git, curl, unzip, gh (GitHub), glab (GitLab), jq (API JSON)
+# Dependencies will be checked and installed automatically if possible.
+
+set -euo pipefail
+
+# --------------------- Helper functions ---------------------
+show_help() {
+cat <<'EOF'
+Usage: git-upload-anything [OPTIONS]
+
+Options:
+  --source <path>      Path to folder or zip file to upload
+  --repo <name>        Repository name to create
+  --host <name>        Host: github, gitlab, forgejo (default: github)
+  --private            Make repository private
+  --cleanup            Remove temporary files after upload
+  --account <name>     Switch to a specific account (if multi-account)
+  --help               Show this help and exit
+
+Examples:
+  git-upload-anything --source ./myapp.zip --repo MyRepo --host github --private
+  git-upload-anything --source ./folder --repo Project --host gitlab --cleanup
+EOF
+}
+
+log() { printf "[INFO] %s\n" "$*"; }
+err() { printf "[ERR] %s\n" "$*" >&2; exit 1; }
+
+# --------------------- Parse CLI args ---------------------
+SOURCE=""
+REPO=""
+PRIVATE=false
+CLEANUP=false
+HOST="github"
+ACCOUNT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source) SOURCE="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --host) HOST="$2"; shift 2 ;;
+    --private) PRIVATE=true; shift ;;
+    --cleanup) CLEANUP=true; shift ;;
+    --account) ACCOUNT="$2"; shift 2 ;;
+    --help) show_help; return 0 ;;
+    *) err "Unknown argument: $1" ;;
+  esac
+done
+
+[[ -z "$SOURCE" || -z "$REPO" ]] && show_help
+
+# --------------------- Dependency check ---------------------
+check_dep() {
+  local dep=$1
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    log "Missing dependency: $dep"
+    install_dep "$dep"
+  fi
+}
+
+install_dep() {
+  local dep=$1
+  log "Installing $dep..."
+  if command -v pkg >/dev/null 2>&1; then
+    pkg install -y "$dep"
+  elif command -v apt >/dev/null 2>&1; then
+    sudo apt update && sudo apt install -y "$dep"
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -Sy "$dep" --noconfirm
+  elif command -v brew >/dev/null 2>&1; then
+    brew install "$dep"
+  else
+    err "Cannot install $dep: no supported package manager"
+  fi
+}
+
+for dep in git curl unzip jq; do check_dep "$dep"; done
+# CLI tools for hosts
+[ "$HOST" = "github" ] && check_dep "gh"
+[ "$HOST" = "gitlab" ] && check_dep "glab"
+# Forgejo/Gitea handled via curl/jq
+
+# --------------------- Authenticate ---------------------
+if [ -n "$ACCOUNT" ]; then
+  log "Switching to account: $ACCOUNT"
+  # GitHub
+  if [ "$HOST" = "github" ]; then
+    gh auth login --hostname github.com --git-protocol https --web
+  # GitLab
+  elif [ "$HOST" = "gitlab" ]; then
+    glab auth login
+  fi
+fi
+
+# --------------------- Prepare workspace ---------------------
+if [ -f "$SOURCE" ] && echo "$SOURCE" | grep -qi '\.zip$'; then
+  TMP_DIR=$(mktemp -d)
+  log "Extracting zip: $SOURCE -> $TMP_DIR"
+  unzip -q "$SOURCE" -d "$TMP_DIR"
+  cd "$TMP_DIR" || err "Cannot enter temp dir"
+elif [ -d "$SOURCE" ]; then
+  cd "$SOURCE" || err "Cannot enter directory: $SOURCE"
+else
+  err "Invalid source: $SOURCE"
+fi
+
+# --------------------- Initialize Git ---------------------
+if [ ! -d ".git" ]; then
+  log "Initializing local git repository..."
+  git init >/dev/null
+  git add . >/dev/null
+  git commit -m "Initial commit" >/dev/null
+else
+  # Ensure at least one commit
+  if [ -z "$(git log --oneline 2>/dev/null)" ]; then
+    git add . >/dev/null
+    git commit -m "Initial commit" >/dev/null
+  fi
+fi
+
+# --------------------- Create remote repository ---------------------
+REPO_VISIBILITY="public"
+[ "$PRIVATE" = true ] && REPO_VISIBILITY="private"
+
+case "$HOST" in
+  github)
+    log "Creating GitHub repo '$REPO' ($REPO_VISIBILITY)"
+    gh repo create "$REPO" --"$REPO_VISIBILITY" --source=. --remote=origin --push
+    ;;
+  gitlab)
+    log "Creating GitLab repo '$REPO' ($REPO_VISIBILITY')"
+    glab repo create "$REPO" --"$REPO_VISIBILITY" --push
+    ;;
+  forgejo|gitea)
+    log "Creating Forgejo/Gitea repo '$REPO' ($REPO_VISIBILITY)"
+    # Requires GITEA_TOKEN and GITEA_HOST env vars
+    : "${GITEA_HOST:?Need to set GITEA_HOST}"
+    : "${GITEA_TOKEN:?Need to set GITEA_TOKEN}"
+    PRIVATE_FLAG=0
+    [ "$PRIVATE" = true ] && PRIVATE_FLAG=1
+    curl -s -X POST -H "Content-Type: application/json" \
+      -H "Authorization: token $GITEA_TOKEN" \
+      -d "{\"name\":\"$REPO\",\"private\":$PRIVATE_FLAG}" \
+      "$GITEA_HOST/api/v1/user/repos" >/dev/null
+    git remote add origin "$GITEA_HOST/$REPO.git"
+    git push -u origin main
+    ;;
+  *)
+    err "Unsupported host: $HOST"
+    ;;
+esac
+
+# --------------------- Cleanup ---------------------
+if [ "$CLEANUP" = true ]; then
+  log "Cleaning up temporary files..."
+  [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR"
+fi
+
+log "✅ Repository '$REPO' successfully uploaded to $HOST!"
+return 0
