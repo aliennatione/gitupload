@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# git-upload-anything (v2 universal, fixed)
+# git-upload-anything (v2 universal, fixed, source-friendly)
 # Uploads any local directory or zip file to a GitHub repository automatically.
 # Supports multiple accounts and global installation.
 #
@@ -18,6 +18,146 @@
 # 🪪 Auth notes:
 #   - If `gh auth login` cannot open a browser, copy/paste the shown URL manually.
 #   - Works in WSL/Termux/headless environments too.
+
+# Safe mode
+set -e
+
+# --------------------- Helper functions ---------------------
+show_help() {
+cat <<'EOF'
+Usage: git-upload-anything [OPTIONS]
+
+Options:
+  --source <path>        Path to folder or zip file to upload
+  --repo <name>          Repository name to create on GitHub
+  --private              Make repository private (default: public)
+  --cleanup              Remove temporary files after upload
+  --account <username>   Switch to GitHub account (if multiple)
+  --help                 Show this help
+
+Examples:
+  git-upload-anything --source ./myapp.zip --repo MyRepo --private
+  git-upload-anything --source ./folder --repo Project --cleanup --account work
+EOF
+return 0
+}
+
+log() { printf "[INFO] %s\n" "$*"; }
+err() { printf "[ERR] %s\n" "$*\n" >&2; return 1; }
+
+# --------------------- Parse CLI args ---------------------
+SOURCE=""
+REPO=""
+PRIVATE=false
+CLEANUP=false
+ACCOUNT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source) SOURCE="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --private) PRIVATE=true; shift ;;
+    --cleanup) CLEANUP=true; shift ;;
+    --account) ACCOUNT="$2"; shift 2 ;;
+    --help) show_help; return 0 ;;
+    *) err "Unknown argument: $1"; return 1 ;;
+  esac
+done
+
+# Validate required parameters
+if [ -z "$SOURCE" ] || [ -z "$REPO" ]; then
+  show_help
+  return 0
+fi
+
+# --------------------- Dependency check ---------------------
+check_dep() {
+  dep="$1"
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    log "Missing dependency: $dep"
+    install_dep "$dep"
+  fi
+}
+
+install_dep() {
+  dep="$1"
+  log "Installing $dep..."
+  if command -v pkg >/dev/null 2>&1; then
+    pkg install -y "$dep"
+  elif command -v apt >/dev/null 2>&1; then
+    sudo apt update && sudo apt install -y "$dep"
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -Sy "$dep" --noconfirm
+  elif command -v brew >/dev/null 2>&1; then
+    brew install "$dep"
+  else
+    err "Cannot install $dep: no supported package manager found"
+    return 1
+  fi
+}
+
+for dep in git curl unzip gh sudo; do
+  check_dep "$dep" || return 1
+done
+
+# --------------------- Switch account if requested ---------------------
+if [ -n "$ACCOUNT" ]; then
+  log "Switching to GitHub account: $ACCOUNT"
+  gh auth login --hostname github.com --git-protocol https --web
+fi
+
+# --------------------- Authenticate GH if needed ---------------------
+if ! gh auth status >/dev/null 2>&1; then
+  log "GitHub CLI not authenticated. Starting login..."
+  gh auth login
+fi
+
+# --------------------- Prepare workspace ---------------------
+if [ -f "$SOURCE" ] && echo "$SOURCE" | grep -qi '\.zip$'; then
+  TMP_DIR=$(mktemp -d)
+  log "Extracting zip: $SOURCE -> $TMP_DIR"
+  unzip -q "$SOURCE" -d "$TMP_DIR"
+  cd "$TMP_DIR" || { err "Cannot enter temp directory"; return 1; }
+elif [ -d "$SOURCE" ]; then
+  cd "$SOURCE" || { err "Cannot enter directory: $SOURCE"; return 1; }
+else
+  err "Invalid source: $SOURCE"
+  return 1
+fi
+
+# --------------------- Initialize Git repo ---------------------
+if [ ! -d ".git" ]; then
+  log "Initializing local git repository..."
+  git init >/dev/null
+  git add . >/dev/null
+  git commit -m "Initial commit" >/dev/null
+else
+  if [ -z "$(git log --oneline 2>/dev/null)" ]; then
+    log "Repository exists but has no commits. Creating first commit..."
+    git add . >/dev/null
+    git commit -m "Initial commit" >/dev/null
+  fi
+fi
+
+# --------------------- GitHub repo setup ---------------------
+REPO_VISIBILITY="public"
+[ "$PRIVATE" = true ] && REPO_VISIBILITY="private"
+
+log "Creating GitHub repository '$REPO' ($REPO_VISIBILITY)..."
+if ! gh repo create "$REPO" --"$REPO_VISIBILITY" --source=. --remote=origin --push; then
+  err "Failed to create/push repo. Check GH authentication or repo name."
+  return 1
+fi
+
+# --------------------- Cleanup ---------------------
+if [ "$CLEANUP" = true ]; then
+  log "Cleaning up temporary files..."
+  [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"
+fi
+
+log "✅ Repository '$REPO' successfully uploaded to GitHub!"
+return 0
+
 
 set -e
 
